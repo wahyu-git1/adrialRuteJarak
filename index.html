@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistem Pemantauan Rute SPBU</title>
+    
+    <!-- Memuat Leaflet CSS (Peta) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- CSS Sederhana untuk Layout -->
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; }
+        #sidebar { width: 300px; background-color: #2c3e50; color: white; overflow-y: auto; display: flex; flex-direction: column; }
+        .header { padding: 20px; background-color: #1a252f; text-align: center; }
+        .route-card { padding: 15px; border-bottom: 1px solid #34495e; cursor: pointer; transition: background 0.3s; }
+        .route-card:hover { background-color: #34495e; }
+        .route-card.active { background-color: #3498db; border-left: 5px solid #2980b9; }
+        .route-title { font-weight: bold; font-size: 16px; margin-bottom: 5px; }
+        .route-details { font-size: 13px; color: #bdc3c7; }
+        #map { flex-grow: 1; height: 100%; }
+        .loading { padding: 20px; text-align: center; font-style: italic; }
+    </style>
+</head>
+<body>
+
+    <div id="app" style="display: contents;">
+        <!-- SIDEBAR KIRI -->
+        <div id="sidebar">
+            <div class="header">
+                <h2>Rute Distribusi</h2>
+                <button @click="tampilkanSemuaRute()" style="padding: 8px; cursor:pointer; width:100%; margin-top:10px;">Lihat Semua Rute</button>
+            </div>
+            
+            <div v-if="routes.length === 0" class="loading">Memuat data rute...</div>
+            
+            <div v-for="route in routes" :key="route.id_rute" 
+                 class="route-card" 
+                 :class="{ active: activeRouteId === route.id_rute }"
+                 @click="pilihRute(route)">
+                <div class="route-title">Truk {{ route.id_rute }} ({{ route.nopol }})</div>
+                <div class="route-details">
+                    Muatan: {{ route.total_muatan }} / {{ route.kapasitas }} L<br>
+                    Jumlah SPBU: {{ route.waypoints.length - 2 }} Titik
+                </div>
+            </div>
+        </div>
+
+        <!-- PETA KANAN -->
+        <div id="map"></div>
+    </div>
+
+    <!-- Memuat Library Vue, Leaflet, dan Axios -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    routes: [],
+                    activeRouteId: null,
+                    map: null,
+                    mapLayers: [] // Menyimpan garis dan marker yang sedang digambar
+                }
+            },
+            mounted() {
+                this.initMap();
+                this.loadData();
+            },
+            methods: {
+                // 1. Inisialisasi Peta Dasar (Surabaya)
+                initMap() {
+                    this.map = L.map('map').setView([-7.2504, 112.7688], 12);
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        attribution: '&copy; OpenStreetMap contributors'
+                    }).addTo(this.map);
+                },
+
+                // 2. Mengambil data dari routes.json
+                async loadData() {
+                    try {
+                        const response = await axios.get('routes.json');
+                        this.routes = response.data;
+                    } catch (error) {
+                        alert("Gagal memuat routes.json. Pastikan Anda menjalankan ini lewat Local Server!");
+                    }
+                },
+
+                // 3. Menghapus semua garis dan marker yang ada di peta
+                bersihkanPeta() {
+                    this.mapLayers.forEach(layer => this.map.removeLayer(layer));
+                    this.mapLayers = [];
+                },
+
+                // 4. Logika saat user mengklik sebuah rute di Sidebar
+                async pilihRute(route) {
+                    this.activeRouteId = route.id_rute;
+                    this.bersihkanPeta();
+                    
+                    // Membuat Marker (Pin Point) beserta Tooltip/Hover
+                    route.waypoints.forEach((point, index) => {
+                        let isDepot = point.nama.includes("DEPOT");
+                        let markerColor = isDepot ? 'red' : 'blue';
+                        
+                        let marker = L.circleMarker([point.lat, point.lng], {
+                            color: markerColor, radius: isDepot ? 10 : 6, fillOpacity: 0.8
+                        }).addTo(this.map);
+
+                        // Tooltip Info muncul saat disentuh mouse
+                        marker.bindTooltip(`
+                            <b>${point.nama}</b><br>
+                            Urutan: ${index === 0 || index === route.waypoints.length - 1 ? 'Depot' : index}<br>
+                            Demand: ${point.demand} Liter
+                        `);
+                        this.mapLayers.push(marker);
+                    });
+
+                    // 5. Mengambil Garis Jalan Asli dari OSRM
+                    // OSRM format: lng,lat;lng,lat;...
+                    let coordinatesString = route.waypoints.map(p => `${p.lng},${p.lat}`).join(';');
+                    let osrmUrl = `https://router.project-osrm.org/route/v1/driving/${coordinatesString}?overview=full&geometries=geojson`;
+
+                    try {
+                        let res = await axios.get(osrmUrl);
+                        let geojsonLine = res.data.routes[0].geometry;
+                        
+                        // Menggambar garis jalan berliku sesuai OSRM
+                        let routeLine = L.geoJSON(geojsonLine, {
+                            style: { color: '#3498db', weight: 5, opacity: 0.7 }
+                        }).addTo(this.map);
+                        
+                        this.mapLayers.push(routeLine);
+                        
+                        // Menyesuaikan zoom kamera agar semua titik terlihat
+                        this.map.fitBounds(routeLine.getBounds(), { padding: [50, 50] });
+
+                    } catch (err) {
+                        console.error("OSRM Error:", err);
+                        alert("Gagal mengambil jalur dari OSRM (Mungkin rate limit).");
+                    }
+                },
+
+                // 6. Logika untuk menampilkan semua rute (Opsional untuk Anda kembangkan)
+                tampilkanSemuaRute() {
+                    alert("Fitur menampilkan semua rute sedang dimuat... (Bisa dilakukan dengan melooping OSRM untuk semua array, namun hati-hati rate limit OSRM gratis)");
+                    this.activeRouteId = null;
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
